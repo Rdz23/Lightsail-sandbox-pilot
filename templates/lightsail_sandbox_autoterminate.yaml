@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Lightsail Sandbox (Ubuntu 22.04) with guarded bundles,
+  ENV=Sandbox tag, bootstrap tools, and auto-terminate after 10 minutes + SNS notify.
+
+Parameters:
+  InstanceName:
+    Type: String
+    Default: Sandbox-developer
+    Description: Lightsail instance name (must start with Sandbox- per your guardrail).
+  BundleId:
+    Type: String
+    AllowedValues: [nano_3_0, micro_3_0]
+    Default: nano_3_0 
+    Description: Allowed Lightsail bundle size.
+  SnsTopicArn:
+    Type: String
+    Description: ARN of SNS topic to notify after the instance is terminated (e.g., arn:aws:sns:ap-southeast-1:123456789012:Sandbox-notification)
+
+Mappings:
+  Lightsail:
+    Ubuntu2204:
+      BlueprintId: ubuntu_22_04
+
+Resources:
+  SandboxInstance:
+    Type: AWS::Lightsail::Instance
+    Properties:
+      InstanceName: !Ref InstanceName
+      AvailabilityZone: ap-southeast-1a
+      BlueprintId: !FindInMap [Lightsail, Ubuntu2204, BlueprintId]
+      BundleId: !Ref BundleId
+      UserData: |
+        #!/bin/bash
+        set -xe
+        apt-get update -y
+        apt-get install -y docker.io docker-compose git unzip
+        apt-get install -y nodejs python3-pip
+        sudo apt-get install -y nodejs npm
+        pip3 install --upgrade awscli boto3
+        usermod -aG docker ubuntu || true
+      Tags:
+        - Key: ENV
+          Value: Sandbox
+
+  AutoTerminateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: LambdaLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:ap-southeast-1:*:*
+        - PolicyName: LightsailTerminateAndDescribe
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lightsail:DeleteInstance
+                  - lightsail:GetInstance
+                Resource: "*"
+        - PolicyName: SnsPublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref SnsTopicArn
+        - PolicyName: EventsSelfDisable
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:DisableRule
+                Resource: "*"   # wildcard to avoid CFN dependency on the Rule ARN
+
+  AutoTerminateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt AutoTerminateRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          INSTANCE_NAME: !Ref InstanceName
+          SNS_TOPIC_ARN: !Ref SnsTopicArn
+          REGION: ap-southeast-1
+      Code:
+        ZipFile: |
+          import os, json, boto3, time
+          from botocore.exceptions import ClientError
+
+          REGION = os.environ['REGION']
+          INSTANCE_NAME = os.environ['INSTANCE_NAME']
+          SNS_ARN = os.environ['SNS_TOPIC_ARN']
+
+          ls = boto3.client('lightsail', region_name=REGION)
+          sns = boto3.client('sns', region_name=REGION)
+          events = boto3.client('events', region_name=REGION)
+
+          def instance_exists(name):
+              try:
+                  ls.get_instance(instanceName=name)
+                  return True
+              except ClientError as e:
+                  if e.response['Error']['Code'] in ('NotFoundException', '404'):
+                      return False
+                  raise
+
+          def get_rule_name_from_event(event):
+              try:
+                  arn = event.get("resources", [])[0]
+                  return arn.split("/")[-1]
+              except Exception:
+                  return None
+
+          def handler(event, context):
+              # If already deleted, exit quietly.
+              if not instance_exists(INSTANCE_NAME):
+                  return {"status": "already_deleted"}
+
+              # Request delete (terminate).
+              ls.delete_instance(instanceName=INSTANCE_NAME)
+
+              # Wait until it's gone (up to ~60s).
+              for _ in range(12):
+                  time.sleep(5)
+                  if not instance_exists(INSTANCE_NAME):
+                      break
+
+              deleted = not instance_exists(INSTANCE_NAME)
+
+              # Notify via SNS
+              msg = {
+                  "message": "Lightsail instance auto-terminated by sandbox policy" if deleted
+                             else "Lightsail instance terminate requested; still deleting",
+                  "instanceName": INSTANCE_NAME,
+                  "region": REGION,
+                  "time": int(time.time())
+              }
+              sns.publish(
+                  TopicArn=SNS_ARN,
+                  Subject=f"Sandbox auto-terminate: {INSTANCE_NAME}",
+                  Message=json.dumps(msg)
+              )
+
+              # Best-effort: disable the schedule so it's one-shot (derive rule name from event).
+              rule_name = get_rule_name_from_event(event)
+              if rule_name:
+                  try:
+                      events.disable_rule(Name=rule_name)
+                  except Exception:
+                      pass
+
+              return {"status": "terminated" if deleted else "deleting"}
+
+  AutoTerminateRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub sandbox-autoterminate-${InstanceName}
+      Description: Scheduler to terminate the Lightsail instance ~10 minutes after stack create.
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt AutoTerminateFunction.Arn
+          Id: LambdaTarget
+
+  AllowEventsInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AutoTerminateFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt AutoTerminateRule.Arn
+
+Outputs:
+  InstanceNameOut:
+    Description: Lightsail instance name
+    Value: !Ref InstanceName
+  AutoTerminateRuleName:
+    Description: EventBridge rule that triggers the auto-terminate
+    Value: !Ref AutoTerminateRule
