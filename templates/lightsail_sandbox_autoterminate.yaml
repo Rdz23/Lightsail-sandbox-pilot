@@ -10,7 +10,7 @@ Parameters:
     Description: Lightsail instance name (must start with Sandbox- per your guardrail).
   BundleId:
     Type: String
-    AllowedValues: [nano_3_0, micro_3_0]
+    AllowedValues: [nano_3_0]
     Default: nano_3_0 
     Description: Allowed Lightsail bundle size.
   SnsTopicArn:
