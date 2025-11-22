@@ -3,10 +3,10 @@ For software development team experimentation environment safe, low-cost environ
 
 **By leveraging AWS Lightsail, we gain:**
 
-  Simplicity – easy setup with predictable pricing.
-  Governance – predefined instance types, Linux-only with tagged "Sandbox"
-  Enablement – developers can “jump in” immediately, with Docker, Node.js, Python, and AWS CLI already installed, and other if needed.
-  Auto-stop at night (via Lambda/EventBridge) to minimize unnecessary runtime.
+- Simplicity – easy setup with predictable pricing.
+- Governance – predefined instance types, Linux-only with tagged "Sandbox"
+- Enablement – developers can “jump in” immediately, with Docker, Node.js, Python, and AWS CLI already installed, and other if needed.
+- Auto-stop at night (via Lambda/EventBridge) to minimize unnecessary runtime.
 
 # Lightsail Sandbox Pilot
 
