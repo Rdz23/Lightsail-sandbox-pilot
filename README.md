@@ -1,3 +1,12 @@
+# Context
+For software development team experimentation environment safe, low-cost environment to experiment, test ideas, and validate new technologies without impacting production or incurring unpredictable costs. A Sandbox Environment is an isolated, pre-configured AWS space where developers can quickly spin up resources, try out tools, and learn new cloud technologies.
+
+**By leveraging AWS Lightsail, we gain:**
+  Simplicity – easy setup with predictable pricing.
+  Governance – predefined instance types, Linux-only with tagged "Sandbox"
+  Enablement – developers can “jump in” immediately, with Docker, Node.js, Python, and AWS CLI already installed, and other if needed.
+  Auto-stop at night (via Lambda/EventBridge) to minimize unnecessary runtime.
+
 # Lightsail Sandbox Pilot
 
 Spin up a **guard-railed Lightsail sandbox** via CloudFormation. The instance auto-terminates (per your template logic), and the stack can be cleaned up automatically afterward.
